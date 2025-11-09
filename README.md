@@ -12,7 +12,7 @@ host on [Render](https://render.com/) or any container-friendly platform.
 - **On-demand execution** – Runs only when the `/run` webhook is invoked; no Zapier dependencies.
 - **Form submission recovery** – Fetches submissions from HubSpot in configurable batches (default 500) and re-applies the
   consent values to the matching contacts.
-- **Contact safety** – Updates only the `portal_terms_accepted` and `marketing_opt_in_vrm_properties` properties when a matching
+- **Contact safety** – Updates only the `---` and `---` properties when a matching
   email is found.
 - **Structured responses** – Returns a JSON summary detailing how many submissions were processed, updated, skipped, or produced
   errors.
@@ -23,14 +23,14 @@ host on [Render](https://render.com/) or any container-friendly platform.
 
 - Python 3.10+
 - HubSpot private app token with permission to read form submissions and update contacts
-- HubSpot form ID `4750ad3c-bf26-4378-80f6-e7937821533f`
+- HubSpot form ID `----`
 
 Set the following environment variables before running the service:
 
 | Variable | Description |
 | --- | --- |
 | `HUBSPOT_PRIVATE_APP_TOKEN` | Required. HubSpot private app token used for all API requests. |
-| `HUBSPOT_FORM_ID` | Optional. Defaults to `4750ad3c-bf26-4378-80f6-e7937821533f`. |
+| `HUBSPOT_FORM_ID` | Optional. Defaults to `---`. |
 | `HUBSPOT_BASE_URL` | Optional. Override HubSpot base URL for testing (default `https://api.hubapi.com`). |
 
 You can place these values in a `.env` file when running locally (the app uses `python-dotenv`).
@@ -49,7 +49,7 @@ You can place these values in a `.env` file when running locally (the app uses `
 
    ```bash
    export HUBSPOT_PRIVATE_APP_TOKEN="your-private-app-token"
-   export HUBSPOT_FORM_ID="4750ad3c-bf26-4378-80f6-e7937821533f"
+   export HUBSPOT_FORM_ID="---"
    ```
 
 3. Start the FastAPI app with Uvicorn:
@@ -107,26 +107,16 @@ A successful request returns a payload similar to:
    automatically paging through the results until the API reports no further data or the optional `max_submissions` threshold is
    met.
 2. **Parse checkbox values** – Reads the `values` array from each submission and extracts:
-   - `i_agree_to_vrm_mortgage_services_s_terms_of_service_and_privacy_policy` → `portal_terms_accepted`
-   - `select_to_receive_information_from_vrm_mortgage_services_regarding_events_and_property_information` →
-     `marketing_opt_in_vrm_properties`
+   - `---`
+   - `---` →
+     `---`
 3. **Find matching contact** – Uses the HubSpot CRM search endpoint to locate the contact by exact email.
 4. **Update contact** – Patches the contact with the parsed consent values. If the contact is missing or an error occurs, the
    service records the skipped/error count but continues processing the remaining submissions.
 
 All processing happens synchronously within the request so you immediately receive a status summary. For large batches (for
-example 13,000+ submissions) the service paginates through the HubSpot results automatically. You can reduce the `batch_size` or
+example 10,000+ submissions) the service paginates through the HubSpot results automatically. You can reduce the `batch_size` or
 set `max_submissions` to break the work into smaller chunks if you need to respect HubSpot rate limits or long-running timeouts.
-
----
-
-## Extending the Service
-
-- **Add logging destinations** – The app uses standard Python logging; configure handlers (e.g., JSON logging, external aggregators)
-  as needed.
-- **Custom property mapping** – Update the `CHECKBOX_FIELDS` constant in `app.py` if the HubSpot property names change.
-- **Alternate triggers** – Because the service is HTTP-based, you can connect it to any scheduler or automation platform that can
-  send webhook requests.
 
 ---
 
