@@ -38,7 +38,7 @@ app = FastAPI(title="HubSpot Form Recovery – Sequential Version")
 
 
 HUBSPOT_BASE_URL = os.getenv("HUBSPOT_BASE_URL", "https://api.hubapi.com")
-HUBSPOT_FORM_ID = os.getenv("HUBSPOT_FORM_ID", "4750ad3c-bf26-4378-80f6-e7937821533f")
+DEFAULT_FORM_ID = os.getenv("HUBSPOT_FORM_ID", "4750ad3c-bf26-4378-80f6-e7937821533f")
 HUBSPOT_TOKEN = os.getenv("HUBSPOT_PRIVATE_APP_TOKEN")
 
 CHECKBOX_PROPERTIES = [
@@ -50,6 +50,19 @@ CHECKBOX_PROPERTIES = [
     ).split(",")
     if prop.strip()
 ]
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment variable."""
+
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+DEFAULT_DRY_RUN = env_bool("HUBSPOT_RECOVERY_DRY_RUN", default=False)
 
 FORM_PAGE_SIZE = 1000
 FETCH_DEFAULT_DELAY = 0.2
@@ -70,7 +83,8 @@ def hubspot_headers(include_content_type: bool = True) -> Dict[str, str]:
 
 
 class RunRequest(BaseModel):
-    dry_run: bool = False
+    dry_run: Optional[bool] = None
+    form_id: Optional[str] = None
 
 
 class RunSummary(BaseModel):
@@ -85,12 +99,33 @@ class RunSummary(BaseModel):
 def run_recovery(request: Optional[RunRequest] = None) -> RunSummary:
     """Trigger the recovery job and return a JSON summary of the results."""
 
-    dry_run = bool(request.dry_run) if request else False
+    dry_run = (
+        DEFAULT_DRY_RUN
+        if request is None or request.dry_run is None
+        else bool(request.dry_run)
+    )
+    form_id = (
+        (request.form_id or DEFAULT_FORM_ID or "").strip()
+        if request
+        else (DEFAULT_FORM_ID or "").strip()
+    )
+
+    if not form_id:
+        raise HTTPException(
+            status_code=500,
+            detail="HUBSPOT_FORM_ID environment variable is required",
+        )
+
     if dry_run:
         logger.info("Running in DRY RUN mode — no HubSpot updates will be made.")
 
+    if request and request.form_id:
+        logger.info("Processing submissions for form %s (override from request)", form_id)
+    else:
+        logger.info("Processing submissions for form %s (from environment)", form_id)
+
     try:
-        submissions = fetch_all_submissions()
+        submissions = fetch_all_submissions(form_id)
         stats = process_submissions(submissions, dry_run=dry_run)
     except RuntimeError as exc:
         logger.exception("Configuration error while running recovery job")
@@ -105,7 +140,7 @@ def run_recovery(request: Optional[RunRequest] = None) -> RunSummary:
     return RunSummary(dry_run=dry_run, **stats)
 
 
-def fetch_all_submissions() -> List[Dict]:
+def fetch_all_submissions(form_id: str) -> List[Dict]:
     """Download every submission for the configured form before processing."""
 
     logger.info("Fetching form submissions from HubSpot...")
@@ -119,7 +154,7 @@ def fetch_all_submissions() -> List[Dict]:
             params["offset"] = offset
 
         response = requests.get(
-            f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{HUBSPOT_FORM_ID}",
+            f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}",
             headers=hubspot_headers(include_content_type=False),
             params=params,
             timeout=30,

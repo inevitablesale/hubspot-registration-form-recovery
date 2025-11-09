@@ -21,8 +21,8 @@ recovery runs that you can host on [Render](https://render.com/) or any containe
   `"Checked"` / `"Not Checked"`).
 - **Structured logging** – Streams human-readable logs to stdout *and* rotates JSON-friendly log lines into `recovery.log` (or a
   custom path) so you can audit every submission after a run.
-- **Dry-run support** – Add `{ "dry_run": true }` to the `/run` payload to simulate updates and review logs without touching
-  HubSpot data.
+- **Dry-run support** – Add `{ "dry_run": true }` to the `/run` payload (or set `HUBSPOT_RECOVERY_DRY_RUN=true`) to simulate
+  updates and review logs without touching HubSpot data.
 - **Structured responses** – Returns a JSON summary indicating whether the run was a dry run and how many submissions were
   processed, updated, skipped, or produced errors.
 
@@ -42,6 +42,7 @@ Set the following environment variables before running the service:
 | `HUBSPOT_FORM_ID` | Optional. Defaults to `4750ad3c-bf26-4378-80f6-e7937821533f`. |
 | `HUBSPOT_BASE_URL` | Optional. Override HubSpot base URL for testing (default `https://api.hubapi.com`). |
 | `HUBSPOT_CHECKBOX_PROPERTIES` | Optional. Comma-separated consent property names to sync (defaults to the two VRM checkboxes). |
+| `HUBSPOT_RECOVERY_DRY_RUN` | Optional. Set to `true` to make every run a dry run unless explicitly overridden in the request payload. |
 | `LOG_FILE` | Optional. File path for rotating logs (default `recovery.log`, rotates at ~2 MB with 3 backups). |
 
 You can place these values in a `.env` file when running locally (the app uses `python-dotenv`).
@@ -61,6 +62,7 @@ You can place these values in a `.env` file when running locally (the app uses `
    ```bash
    export HUBSPOT_PRIVATE_APP_TOKEN="your-private-app-token"
    export HUBSPOT_FORM_ID="4750ad3c-bf26-4378-80f6-e7937821533f"
+   export HUBSPOT_RECOVERY_DRY_RUN="false"  # or "true" for default dry runs
    ```
 
 3. Start the FastAPI app with Uvicorn:
@@ -75,12 +77,20 @@ You can place these values in a `.env` file when running locally (the app uses `
    curl -X POST http://localhost:8000/run
    ```
 
-A dry run that logs every would-be update without PATCHing HubSpot:
+A dry run that logs every would-be update without PATCHing HubSpot (also enabled automatically when `HUBSPOT_RECOVERY_DRY_RUN` is `true`):
 
 ```bash
 curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"dry_run": true}'
+```
+
+Override the form ID for a single request while leaving the environment default unchanged:
+
+```bash
+curl -X POST http://localhost:8000/run \
+  -H "Content-Type: application/json" \
+  -d '{"form_id": "another-form-guid"}'
 ```
 
 A successful request returns a payload similar to:
