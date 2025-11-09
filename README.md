@@ -1,217 +1,165 @@
-# LearnUpon User Fetcher
+# HubSpot Registration Form Recovery Service (Read-Only Edition)
 
-A Python application that pulls all users from LearnUpon using pagination, classifies them by status (Active, Deactivated, or Pending Invite), and returns the combined list. The application can be run manually or scheduled to run daily.
+This project provides a small FastAPI service that recovers and logs consent preferences for the `#registerForm` HubSpot form.
+When the `/run` endpoint is triggered (for example, by a webhook or scheduled job), the service downloads all available form submissions, extracts the consent checkbox values, and logs each record — including submission ID, email, and consent states.
+
+It is designed for read-only auditing or consent verification, and does not modify HubSpot contact data.
 
 ## Features
 
-- **Pagination Support**: Automatically fetches all users across multiple pages
-- **User Classification**: Classifies users as Active, Deactivated, or Pending Invite based on:
-  - Custom data field `active_yes_or_no`
-  - Sign-in count and last sign-in date
-- **Error Handling**: Robust error handling with configurable retry logic
-- **Logging**: Comprehensive logging to both file and console
-- **Scheduling**: Built-in daily scheduling capability
-- **JSON Output**: Results saved in structured JSON format with summary statistics
+- 🧭 **On-Demand Execution** – Runs only when the `/run` webhook is invoked; no Zapier or scheduler dependencies required.
+- 📥 **Form Submission Recovery** – Fetches every available submission from HubSpot via `/form-integrations/v1/submissions/forms/{formId}`.
+- 📊 **Record-Level Logging** – Logs:
+  - HubSpot Submission ID
+  - Email
+  - “Portal Terms Accepted”
+  - “Marketing Opt-In (VRM Properties)”
+- 🛑 **Kill Switch** – Visit `/kill` at any time to gracefully stop a long-running job.
+- 🧱 **Read-Only Mode** – Does not update, patch, or sync data back to HubSpot. Safe to run in production environments.
+- 🧾 **Structured Logging** – Streams readable logs to stdout and rotates detailed logs into `recovery.log`.
+- ⚙️ **Dry-Run Support** – Always operates in read-only mode, but supports `dry_run=true` for consistency with earlier versions.
+- ✅ **Health Check** – The `/health` endpoint confirms uptime and dry-run mode status.
 
-## Installation
+## Prerequisites
 
-1. **Clone or download the files** to your local machine
-2. **Install dependencies**:
+- Python 3.10+
+- HubSpot private app token with permission to read form submissions
+- HubSpot form ID `4750ad3c-bf26-4378-80f6-e7937821533f`
+
+## Environment Variables
+
+| Variable | Description |
+| --- | --- |
+| `HUBSPOT_PRIVATE_APP_TOKEN` | Required. HubSpot private app token used for API requests. |
+| `HUBSPOT_FORM_ID` | Optional. Defaults to `4750ad3c-bf26-4378-80f6-e7937821533f`. |
+| `HUBSPOT_BASE_URL` | Optional. HubSpot API base URL (default `https://api.hubapi.com`). |
+| `HUBSPOT_CHECKBOX_PROPERTIES` | Optional. Comma-separated list of consent checkbox properties (defaults to VRM Properties fields). |
+| `DRY_RUN` | Optional. Defaults to `true`. Read-only behavior enforced regardless. |
+| `LOG_FILE` | Optional. File path for rotating logs (`recovery.log` by default). |
+
+These can be stored in a `.env` file when running locally.
+The app automatically loads them using `python-dotenv`.
+
+## Running Locally
+
+1. Install dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
 
-## Configuration
+2. Set environment variables:
 
-### Environment Variables
+   ```bash
+   export HUBSPOT_PRIVATE_APP_TOKEN="your-private-app-token"
+   export HUBSPOT_FORM_ID="4750ad3c-bf26-4378-80f6-e7937821533f"
+   export DRY_RUN="true"
+   ```
 
-Create a `.env` file (or set environment variables) with the following:
+3. Start the FastAPI service:
 
-```bash
-# Required
-LEARNUPON_USERNAME=your_username_here
-LEARNUPON_PASSWORD=your_password_here
-LEARNUPON_SUBDOMAIN=vrmuniversity
+   ```bash
+   uvicorn app:app --host 0.0.0.0 --port 8000
+   ```
 
-# Optional
-LEARNUPON_MAX_PAGES=1000
-LEARNUPON_MAX_CONSECUTIVE_ERRORS=3
-LEARNUPON_REQUEST_TIMEOUT=30
-LEARNUPON_SCHEDULE_TIME=09:00
-LEARNUPON_OUTPUT_DIR=.
-LEARNUPON_LOG_LEVEL=INFO
+4. Trigger a run (read-only):
+
+   ```bash
+   curl -X POST http://localhost:8000/run
+   ```
+
+   Or explicitly include dry-run mode:
+
+   ```bash
+   curl -X POST http://localhost:8000/run \
+     -H "Content-Type: application/json" \
+     -d '{"dry_run": true}'
+   ```
+
+5. Stop a running job:
+
+   ```bash
+   curl http://localhost:8000/kill
+   ```
+
+6. Check service health:
+
+   ```bash
+   curl http://localhost:8000/health
+   ```
+
+## Sample Output (Log)
+
+```
+2025-11-09 16:03:11,974 | INFO | Total submissions fetched: 17773
+2025-11-09 16:03:11,975 | INFO | [0001] Submission ID: 6354a0cd-3b21-409d-ad7a-f865854697f3 | Email: andrewjgordin1985@gmail.com | Portal Terms: Checked | Marketing Opt-In: Checked
+2025-11-09 16:03:11,976 | INFO | [0002] Submission ID: 4fd8a3eb-f97d-4b2a-a626-5d89706f66fa | Email: andrewjgordin1985@gmail.com | Portal Terms: Checked | Marketing Opt-In: Checked
 ```
 
-### Configuration Options
+## Deploying to Render
 
-- `LEARNUPON_USERNAME`: Your LearnUpon API username (required)
-- `LEARNUPON_PASSWORD`: Your LearnUpon API password (required)
-- `LEARNUPON_SUBDOMAIN`: LearnUpon subdomain (default: vrmuniversity)
-- `LEARNUPON_MAX_PAGES`: Maximum pages to fetch (default: 1000)
-- `LEARNUPON_MAX_CONSECUTIVE_ERRORS`: Max consecutive errors before stopping (default: 3)
-- `LEARNUPON_REQUEST_TIMEOUT`: Request timeout in seconds (default: 30)
-- `LEARNUPON_SCHEDULE_TIME`: Time to run daily schedule (default: 09:00)
-- `LEARNUPON_OUTPUT_DIR`: Directory to save output files (default: current directory)
-- `LEARNUPON_LOG_LEVEL`: Logging level (default: INFO)
+1. Create a new Web Service in [Render](https://render.com/).
+2. Choose a Python environment and set the start command:
 
-## Usage
+   ```bash
+   uvicorn app:app --host 0.0.0.0 --port $PORT
+   ```
 
-### Manual Run
+3. Add the following environment variables:
 
-Run the fetcher once:
+   - `HUBSPOT_PRIVATE_APP_TOKEN`
+   - (Optional) `HUBSPOT_FORM_ID`
+   - (Optional) `DRY_RUN`
+   - (Optional) `HUBSPOT_BASE_URL`
+   - (Optional) `HUBSPOT_CHECKBOX_PROPERTIES`
+   - (Optional) `LOG_FILE`
 
-```bash
-python learnupon_user_fetcher.py
-```
+4. Trigger the run:
 
-### Scheduled Run
+   ```
+   https://<your-render-service>.onrender.com/run?dry_run=true
+   ```
 
-Run with daily scheduling (runs at 9 AM by default):
+5. To stop an in-progress run:
 
-```bash
-python learnupon_user_fetcher.py --schedule
-```
+   ```
+   https://<your-render-service>.onrender.com/kill
+   ```
 
-### Using the Scheduled Runner
+## How the Service Works
 
-For production environments, you can use the dedicated scheduled runner:
+1. **Fetch Submissions** – Calls `GET /form-integrations/v1/submissions/forms/{formId}` repeatedly (limit 50 per page) until no more results remain.
+2. **Parse Consent Fields** – Extracts checkbox states from the `values` array for each submission. Keeps the original HubSpot strings (`"Checked"` / `"Not Checked"`).
+3. **Log Record Details** – Prints the following per submission:
+   - Submission ID
+   - Email
+   - Portal Terms Accepted
+   - Marketing Opt-In (VRM Properties)
+4. **Graceful Shutdown** – If `/kill` is called during execution, the service halts safely and logs a warning.
 
-```bash
-python run_scheduled.py
-```
+## Extending the Service
 
-This is useful for cron jobs or other scheduling systems.
-
-## Output
-
-The application generates:
-
-1. **JSON File**: `learnupon_users_YYYYMMDD_HHMMSS.json` containing:
-   - Timestamp of the run
-   - Total user count
-   - Summary statistics by status
-   - Complete user list with processed data
-
-2. **Log File**: `learnupon_fetcher.log` with detailed execution logs
-
-### Sample Output Structure
-
-```json
-{
-  "timestamp": "2024-01-15T09:00:00.000000",
-  "total_users": 150,
-  "summary": {
-    "Active": 120,
-    "Deactivated": 20,
-    "Pending Invite": 10,
-    "Total": 150
-  },
-  "users": [
-    {
-      "email": "user@example.com",
-      "first_name": "John",
-      "last_name": "Doe",
-      "learupon_user_id": "12345",
-      "learupon_account_status": "Active",
-      "sign_in_count": 15,
-      "last_sign_in_at": "2024-01-10T14:30:00Z",
-      "created_at": "2024-01-01T10:00:00Z",
-      "updated_at": "2024-01-15T08:45:00Z"
-    }
-  ]
-}
-```
-
-## User Classification Logic
-
-Users are classified based on the following logic:
-
-1. **Deactivated**: If `CustomData.active_yes_or_no` is "no"
-2. **Active**: If `CustomData.active_yes_or_no` is "yes"
-3. **Pending Invite**: If `sign_in_count` is 0 AND `last_sign_in_at` is null/empty
-4. **Active**: Default status if no specific indicators are present
-
-## Error Handling
-
-The application includes robust error handling:
-
-- **Network Errors**: Automatic retry with configurable limits
-- **API Errors**: Detailed error logging with response codes
-- **Data Validation**: Handles malformed user data gracefully
-- **Consecutive Errors**: Stops after configurable consecutive failures
-
-## Logging
-
-Logs are written to both:
-- **Console**: Real-time progress updates
-- **File**: `learnupon_fetcher.log` for historical records
-
-Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
-
-## Scheduling
-
-### Built-in Scheduler
-
-The application includes a built-in scheduler that runs daily at the configured time:
-
-```bash
-python learnupon_user_fetcher.py --schedule
-```
-
-### External Scheduling
-
-For production environments, consider using:
-
-- **Cron** (Linux/macOS):
-  ```bash
-  0 9 * * * /path/to/python /path/to/run_scheduled.py
-  ```
-
-- **Task Scheduler** (Windows):
-  - Create a task to run `run_scheduled.py` daily at 9 AM
-
-- **Docker**: Use a container with cron or a scheduling service
+- **Add Timestamps:** Include the `submittedAt` field for time-based auditing.
+- **Ship Logs Elsewhere:** Redirect or stream `recovery.log` to a centralized monitoring service.
+- **Alternate Triggers:** Schedule webhook calls from Zapier, GitHub Actions, or any HTTP-capable scheduler.
 
 ## Troubleshooting
 
-### Common Issues
+| Symptom | Possible Cause | Resolution |
+| --- | --- | --- |
+| HTTP 500 | Missing or invalid environment variable | Check `.env` or Render environment settings |
+| HTTP 502 | HubSpot API timeout or service issue | Retry later or inspect `recovery.log` |
+| Duplicate emails | User submitted form multiple times | Normal HubSpot behavior — each submission is unique |
 
-1. **Authentication Errors**:
-   - Verify username and password
-   - Check subdomain configuration
-   - Ensure API access is enabled
+## Repository Structure
 
-2. **Network Timeouts**:
-   - Increase `LEARNUPON_REQUEST_TIMEOUT`
-   - Check network connectivity
-   - Verify LearnUpon API status
-
-3. **No Users Found**:
-   - Check if pagination is working correctly
-   - Verify API endpoint URL
-   - Review logs for error messages
-
-### Debug Mode
-
-Enable debug logging:
-
-```bash
-export LEARNUPON_LOG_LEVEL=DEBUG
-python learnupon_user_fetcher.py
+```
+app.py             # FastAPI app entry point and recovery logic
+requirements.txt   # Python dependencies
+README.md          # This documentation
 ```
 
-## API Compatibility
+## ✅ Summary
 
-This application is designed to work with LearnUpon's REST API v1. The exact API endpoints and response formats may vary by LearnUpon instance configuration.
-
-## Security Notes
-
-- Store credentials securely using environment variables
-- Never commit `.env` files to version control
-- Use appropriate file permissions for log files
-- Consider using API keys instead of passwords if available
-
-## License
-
-This project is provided as-is for educational and business purposes.
-# hubspot-registration-form-recovery
+This edition of the HubSpot Registration Form Recovery Service is a safe, read-only tool for auditing and verifying consent records.
+It logs submission IDs and consent preferences without modifying HubSpot data — perfect for compliance verification, troubleshooting, or data reconciliation.
