@@ -39,7 +39,6 @@ file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 logger.addHandler(file_handler)
 
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() in ("1", "true", "yes")
-
 logger.info("Starting HubSpot Recovery Service")
 logger.info("DRY_RUN=%s | LOG_FILE=%s", DRY_RUN, LOG_FILE)
 
@@ -64,17 +63,11 @@ CHECKBOX_PROPERTIES = [
 
 logger.info("Configured checkbox fields: %s", ", ".join(CHECKBOX_PROPERTIES))
 
-# --- Helpers ---
-def env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    return raw and raw.strip().lower() in {"1", "true", "yes", "on"}
-
 FORM_PAGE_SIZE = 1000
 FETCH_DELAY = 0.2
-SEARCH_DELAY = 0.2
 UPDATE_DELAY = 0.25
 
-
+# --- Helpers ---
 def hubspot_headers(include_content_type: bool = True) -> Dict[str, str]:
     if not HUBSPOT_TOKEN:
         raise RuntimeError("HUBSPOT_PRIVATE_APP_TOKEN environment variable is required")
@@ -132,13 +125,14 @@ def run_recovery_get(
     return execute_recovery(form_id, bool(dry_run))
 
 
-# --- Fetch submissions ---
+# --- Fetch submissions (v2 only) ---
 def fetch_all_submissions(form_id: str) -> List[Dict]:
     submissions: List[Dict] = []
     offset: Optional[str] = None
     has_more = True
 
-    logger.info("Fetching submissions from HubSpot API (form-integrations/v1)...")
+    logger.info("Fetching submissions from HubSpot API (/form/v2)...")
+    url = f"{HUBSPOT_BASE_URL}/form/v2/forms/{form_id}/submissions"
 
     while has_more:
         params: Dict[str, object] = {"limit": FORM_PAGE_SIZE}
@@ -147,25 +141,18 @@ def fetch_all_submissions(form_id: str) -> List[Dict]:
         if HUBSPOT_PORTAL_ID:
             params["portalId"] = HUBSPOT_PORTAL_ID
 
-        url = f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}"
         response = requests.get(url, headers=hubspot_headers(False), params=params, timeout=30)
-
-        if response.status_code == 400:
-            raise RuntimeError(
-                "400 Bad Request — ensure your Private App has 'forms' and 'external_integrations.forms.access' scopes."
-            )
-
         response.raise_for_status()
         payload = response.json()
 
-        page_results = payload.get("results", [])
+        page_results = payload.get("results") or payload.get("submissions") or []
         submissions.extend(page_results)
         logger.info("Fetched %s new submissions (total=%s)", len(page_results), len(submissions))
 
         has_more = payload.get("hasMore", False)
         offset = payload.get("continuationOffset") or payload.get("offset")
+        time.sleep(FETCH_DELAY)
 
-        sleep_for_rate_limit(response.headers, FETCH_DELAY)
         if not has_more:
             break
 
@@ -180,10 +167,7 @@ def process_submissions(submissions: List[Dict], *, dry_run: bool) -> Dict[str, 
         stats["processed"] += 1
         try:
             email, checkboxes = parse_submission(submission)
-            if not email:
-                stats["skipped"] += 1
-                continue
-            if not checkboxes:
+            if not email or not checkboxes:
                 stats["skipped"] += 1
                 continue
 
@@ -244,12 +228,7 @@ def update_contact(contact_id: str, props: Dict[str, str]) -> None:
         timeout=30,
     )
     response.raise_for_status()
-    sleep_for_rate_limit(response.headers, UPDATE_DELAY)
-
-
-# --- Rate limit ---
-def sleep_for_rate_limit(headers: Dict[str, str], delay: float) -> None:
-    time.sleep(delay)
+    time.sleep(UPDATE_DELAY)
 
 
 # --- Health check ---
