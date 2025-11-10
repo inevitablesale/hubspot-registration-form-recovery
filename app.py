@@ -1,4 +1,4 @@
-"""FastAPI service to audit the first 50 HubSpot form submissions (smoke test, read-only with simulated actions)."""
+"""FastAPI service to audit the first 100 HubSpot form submissions (smoke test, read-only with simulated actions)."""
 
 from __future__ import annotations
 import json, logging, os
@@ -29,7 +29,7 @@ for h in (
     h.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(h)
 
-logger.info("Starting HubSpot Form Audit (SMOKE TEST MODE – first 100 only)")
+logger.info("Starting HubSpot Form Audit (SMOKE TEST MODE – first 100 submissions)")
 
 app = FastAPI(title="HubSpot Form Audit – Smoke Test (Preview 100 submissions)")
 
@@ -49,9 +49,13 @@ CHECKBOX_PROPERTIES = [
 
 
 def hubspot_headers(ct: bool = True) -> Dict[str, str]:
+    """Return standard HubSpot auth headers (always include Accept to prevent 400 errors)."""
     if not HUBSPOT_TOKEN:
         raise RuntimeError("Missing HUBSPOT_PRIVATE_APP_TOKEN")
-    h = {"Authorization": f"Bearer {HUBSPOT_TOKEN}"}
+    h = {
+        "Authorization": f"Bearer {HUBSPOT_TOKEN}",
+        "Accept": "application/json",
+    }
     if ct:
         h["Content-Type"] = "application/json"
     return h
@@ -111,14 +115,14 @@ def fetch_first_n_submissions(form_id: str, n: int = 100) -> List[Dict]:
     """Fetch the first N submissions (no pagination, read-only)."""
     r = requests.get(
         f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}",
-        headers=hubspot_headers(False),
+        headers=hubspot_headers(),  # ✅ keep Content-Type & Accept to avoid 400 errors
         params={"limit": n},
         timeout=30,
     )
     r.raise_for_status()
     data = r.json()
     subs = data.get("results", [])[:n]
-    logger.info("✅ Retrieved %s submissions (smoke test mode)", len(subs))
+    logger.info("✅ Retrieved %s submissions (smoke test mode, limit=%s)", len(subs), n)
     return subs
 
 
