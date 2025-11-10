@@ -29,9 +29,9 @@ for h in (
     h.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(h)
 
-logger.info("Starting HubSpot Form Audit (SMOKE TEST MODE – first 50 only)")
+logger.info("Starting HubSpot Form Audit (SMOKE TEST MODE – first 100 only)")
 
-app = FastAPI(title="HubSpot Form Audit – Smoke Test (Preview 50 submissions)")
+app = FastAPI(title="HubSpot Form Audit – Smoke Test (Preview 100 submissions)")
 
 HUBSPOT_BASE_URL = os.getenv("HUBSPOT_BASE_URL", "https://api.hubapi.com")
 DEFAULT_FORM_ID = os.getenv("HUBSPOT_FORM_ID", "4750ad3c-bf26-4378-80f6-e7937821533f")
@@ -90,7 +90,7 @@ def kill_process():
 
 @app.api_route("/run-preview", methods=["GET", "POST"], response_model=RunSummary)
 def run_preview_audit(request: Optional[RunRequest] = None) -> RunSummary:
-    """Fetch and audit only the first 50 submissions for a quick validation run."""
+    """Fetch and audit only the first 100 submissions for a quick validation run."""
     form_id = (request.form_id or DEFAULT_FORM_ID or "").strip() if request else DEFAULT_FORM_ID
     if not form_id:
         raise HTTPException(status_code=500, detail="HUBSPOT_FORM_ID required")
@@ -107,7 +107,7 @@ def run_preview_audit(request: Optional[RunRequest] = None) -> RunSummary:
 # Fetching and Deduplication
 # ---------------------------------------------------------------------
 
-def fetch_first_n_submissions(form_id: str, n: int = 50) -> List[Dict]:
+def fetch_first_n_submissions(form_id: str, n: int = 100) -> List[Dict]:
     """Fetch the first N submissions (no pagination, read-only)."""
     r = requests.get(
         f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}",
