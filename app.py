@@ -81,7 +81,7 @@ def kill_process():
 # ---------------------------------------------------------------------
 
 @app.api_route("/run-single", methods=["GET", "POST"])
-def run_single_update(email: str = "josholson@jonesbororealtycompany.com"):
+def run_single_update(email: str = "phillip@4brealestate.com"):
     """
     Test updating one HubSpot contact with form opt-in and terms acceptance.
     Safe for one-off verification.
