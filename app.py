@@ -1,4 +1,4 @@
-"""FastAPI service to audit all HubSpot form submissions (read-only, full mode)."""
+"""FastAPI service to audit the first 50 HubSpot form submissions (smoke test, read-only)."""
 
 from __future__ import annotations
 import json, logging, os, time
@@ -13,21 +13,21 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-LOG_FILE = os.getenv("LOG_FILE", "recovery_full.log")
+LOG_FILE = os.getenv("LOG_FILE", "recovery_preview.log")
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
-logger = logging.getLogger("hubspot_form_audit")
+logger = logging.getLogger("hubspot_form_preview")
 logger.setLevel(logging.INFO)
 logger.handlers = []
 for h in (
     logging.StreamHandler(),
-    RotatingFileHandler(LOG_FILE, maxBytes=2_000_000, backupCount=2),
+    RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=2),
 ):
     h.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(h)
 
-logger.info("Starting HubSpot Form Audit (READ-ONLY MODE)")
+logger.info("Starting HubSpot Form Audit (SMOKE TEST MODE – first 50 only)")
 
-app = FastAPI(title="HubSpot Form Audit – Full Submission Review")
+app = FastAPI(title="HubSpot Form Audit – Smoke Test (Preview 50 submissions)")
 
 HUBSPOT_BASE_URL = os.getenv("HUBSPOT_BASE_URL", "https://api.hubapi.com")
 DEFAULT_FORM_ID = os.getenv("HUBSPOT_FORM_ID", "4750ad3c-bf26-4378-80f6-e7937821533f")
@@ -76,67 +76,37 @@ def kill_process():
 
 
 # ---------------------------------------------------------------------
-# Full submission audit (with pagination)
+# Smoke Test – First 50 Submissions Only
 # ---------------------------------------------------------------------
 
-@app.api_route("/run-full", methods=["GET", "POST"], response_model=RunSummary)
-def run_full_audit(request: Optional[RunRequest] = None) -> RunSummary:
-    """Fetch and audit ALL submissions for the target form (paginated)."""
+@app.api_route("/run-preview", methods=["GET", "POST"], response_model=RunSummary)
+def run_preview_audit(request: Optional[RunRequest] = None) -> RunSummary:
+    """Fetch and audit only the first 50 submissions for a quick validation run."""
     form_id = (request.form_id or DEFAULT_FORM_ID or "").strip() if request else DEFAULT_FORM_ID
     if not form_id:
         raise HTTPException(status_code=500, detail="HUBSPOT_FORM_ID required")
 
-    logger.info("🔄 Fetching ALL submissions for form %s", form_id)
-    print("🚀 Starting full audit run...")
-    subs = fetch_all_submissions(form_id)
+    logger.info("🚀 Starting smoke test (first 50 submissions) for form %s", form_id)
+    subs = fetch_first_n_submissions(form_id, n=50)
     deduped = deduplicate_by_latest(subs)
-    stats = process_submissions(deduped, report_name="marketing_audit_full.jsonl")
-    print("✅ Full audit completed successfully.")
+    stats = process_submissions(deduped, report_name="marketing_audit_smoketest.jsonl")
+    logger.info("✅ Smoke test completed successfully.")
     return RunSummary(**stats)
 
 
-def fetch_all_submissions(form_id: str) -> List[Dict]:
-    """
-    Fetch all submissions for a HubSpot form using pagination.
-    Each response includes up to 50 records. Continues until no 'after' token remains.
-    """
-    all_subs: List[Dict] = []
-    after: Optional[str] = None
-    total = 0
-
-    while True:
-        params = {"limit": 50}
-        if after:
-            params["after"] = after
-
-        r = requests.get(
-            f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}",
-            headers=hubspot_headers(False),
-            params=params,
-            timeout=30,
-        )
-        if r.status_code == 429:
-            retry_after = int(r.headers.get("Retry-After", "5"))
-            logger.warning("Rate limited. Sleeping for %s seconds...", retry_after)
-            time.sleep(retry_after)
-            continue
-
-        r.raise_for_status()
-        data = r.json()
-        results = data.get("results", [])
-        all_subs.extend(results)
-        total += len(results)
-        logger.info("📥 Retrieved %s submissions (total so far: %s)", len(results), total)
-
-        after = data.get("paging", {}).get("next", {}).get("after")
-        if not after:
-            break
-
-        # Gentle pacing between calls
-        time.sleep(0.5)
-
-    logger.info("✅ Total submissions retrieved: %s", total)
-    return all_subs
+def fetch_first_n_submissions(form_id: str, n: int = 50) -> List[Dict]:
+    """Fetch the first N submissions (no pagination, read-only)."""
+    r = requests.get(
+        f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}",
+        headers=hubspot_headers(False),
+        params={"limit": n},
+        timeout=30,
+    )
+    r.raise_for_status()
+    data = r.json()
+    subs = data.get("results", [])[:n]
+    logger.info("✅ Retrieved %s submissions (smoke test mode)", len(subs))
+    return subs
 
 
 # ---------------------------------------------------------------------
@@ -156,7 +126,7 @@ def deduplicate_by_latest(subs: List[Dict]) -> List[Dict]:
     return list(latest.values())
 
 
-def process_submissions(subs: List[Dict], report_name="marketing_audit_full.jsonl") -> Dict[str, int]:
+def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest.jsonl") -> Dict[str, int]:
     stats = {"processed": 0, "contacts_found": 0, "skipped": 0, "errors": 0}
     status_counts, reason_counts = Counter(), Counter()
 
@@ -202,7 +172,7 @@ def process_submissions(subs: List[Dict], report_name="marketing_audit_full.json
             stats["errors"] += 1
             logger.error("Error %s: %s", i, e)
 
-    logger.info("✅ Full audit complete. Report saved to %s", report_name)
+    logger.info("✅ Smoke test complete. Report saved to %s", report_name)
     logger.info("Status counts: %s", dict(status_counts))
     logger.info("Reason counts: %s", dict(reason_counts))
     return {**stats, "report_file": report_name}
@@ -276,5 +246,5 @@ def get_marketing_contact_status(cid: str) -> Tuple[Optional[str], Optional[str]
 # ---------------------------------------------------------------------
 
 if __name__ == "__main__":
-    summary = run_full_audit()
-    logger.info("Full audit finished: %s", summary.model_dump())
+    summary = run_preview_audit()
+    logger.info("Smoke test finished: %s", summary.model_dump())
