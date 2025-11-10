@@ -1,4 +1,4 @@
-"""FastAPI service to audit the first 50 HubSpot form submissions (smoke test, read-only)."""
+"""FastAPI service to audit the first 50 HubSpot form submissions (smoke test, read-only with simulated actions)."""
 
 from __future__ import annotations
 import json, logging, os, time
@@ -76,7 +76,7 @@ def kill_process():
 
 
 # ---------------------------------------------------------------------
-# Smoke Test – First 50 Submissions Only
+# Smoke Test – First 50 Submissions Only (with simulated actions)
 # ---------------------------------------------------------------------
 
 @app.api_route("/run-preview", methods=["GET", "POST"], response_model=RunSummary)
@@ -144,12 +144,26 @@ def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest
             if not cid:
                 stats["skipped"] += 1
                 continue
+
             stats["contacts_found"] += 1
             status, reason, reason_type, reason_id = get_marketing_contact_status(cid)
-            if status:
-                status_counts[status] += 1
-            if reason:
-                reason_counts[reason] += 1
+            opt_in_value = boxes.get(
+                "select_to_receive_information_from_vrm_mortgage_services_regarding_events_and_property_information"
+            )
+
+            # ---- Simulated action logic ----
+            if status == "false":
+                if opt_in_value == "Checked" and not reason:
+                    action = "→ WOULD UPDATE to TRUE (Marketing Opt-In Checked, Forms #registerForm)"
+                elif opt_in_value == "Not Checked" and (not reason or reason != "#registerForm"):
+                    action = "→ WOULD UPDATE to FALSE (Opt-In Not Checked, Forms #registerForm)"
+                else:
+                    action = "→ NO CHANGE (Status false and consistent)"
+            elif status == "true" and opt_in_value == "Not Checked":
+                action = "→ WOULD UPDATE to FALSE (Currently marketing but form opted out)"
+            else:
+                action = "→ NO CHANGE (Status aligns with form)"
+
             record = {
                 "email": email,
                 "form_values": boxes,
@@ -157,17 +171,21 @@ def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest
                 "hs_marketable_reason": reason,
                 "hs_marketable_reason_type": reason_type,
                 "hs_marketable_reason_id": reason_id,
+                "simulated_action": action,
             }
             with open(report_name, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")
+
             logger.info(
-                "[%s/%s] %s | Status: %s | Reason: %s",
+                "[%s/%s] %s | Status: %s | Reason: %s\n%s",
                 i,
                 len(subs),
                 email,
                 status or "—",
                 reason or "—",
+                action,
             )
+
         except Exception as e:
             stats["errors"] += 1
             logger.error("Error %s: %s", i, e)
@@ -236,7 +254,6 @@ def get_marketing_contact_status(cid: str) -> Tuple[Optional[str], Optional[str]
     reason_type = p.get("hs_marketable_reason_type")
     reason_id = p.get("hs_marketable_reason_id")
 
-    # Build UI-style reason if missing
     if not reason and (reason_type or reason_id):
         reason = f"{reason_type or ''} → {reason_id or ''}".strip(" →")
 
