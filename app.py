@@ -124,6 +124,40 @@ def run_single_update(email: str = "josholson@jonesbororealtycompany.com"):
 
 
 # ---------------------------------------------------------------------
+# NEW: Trace a single submission and log its values
+# ---------------------------------------------------------------------
+
+@app.get("/trace-submission")
+def trace_submission(email: str = "josholson@jonesbororealtycompany.com", form_id: str = DEFAULT_FORM_ID):
+    """
+    Fetch and log the full form submission payload(s) for a specific email.
+    """
+    logger.info("🔍 Tracing submissions for %s", email)
+    subs = fetch_first_n_submissions(form_id, n=500)  # Pull enough to find target
+
+    matches = []
+    for s in subs:
+        vals = s.get("values", [])
+        for v in vals:
+            if v.get("name") == "email" and v.get("value", "").strip().lower() == email.lower():
+                matches.append(s)
+
+    if not matches:
+        logger.warning("No submissions found for %s", email)
+        raise HTTPException(status_code=404, detail=f"No submissions found for {email}")
+
+    logger.info("✅ Found %d submission(s) for %s", len(matches), email)
+    for m in matches:
+        logger.info("📄 Submission payload:\n%s", json.dumps(m, indent=2))
+
+    return {
+        "email": email,
+        "matches_found": len(matches),
+        "first_submission": matches[0] if matches else None,
+    }
+
+
+# ---------------------------------------------------------------------
 # Smoke Test – First 250 Submissions Only (read-only)
 # ---------------------------------------------------------------------
 
@@ -223,12 +257,11 @@ def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest
                 "select_to_receive_information_from_vrm_mortgage_services_regarding_events_and_property_information"
             )
 
-            # ---- Simulated action logic ----
             if status == "false":
                 if opt_in_value == "Checked" and not reason:
-                    action = "→ WOULD UPDATE to TRUE (Marketing Opt-In Checked, Forms #registerForm)"
-                elif opt_in_value == "Not Checked" and (not reason or reason != "#registerForm"):
-                    action = "→ WOULD UPDATE to FALSE (Opt-In Not Checked, Forms #registerForm)"
+                    action = "→ WOULD UPDATE to TRUE (Marketing Opt-In Checked)"
+                elif opt_in_value == "Not Checked":
+                    action = "→ WOULD UPDATE to FALSE (Opt-In Not Checked)"
                 else:
                     action = "→ NO CHANGE (Status false and consistent)"
             elif status == "true":
