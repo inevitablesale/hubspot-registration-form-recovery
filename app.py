@@ -1,7 +1,7 @@
-"""FastAPI service to audit the first 100 HubSpot form submissions (smoke test, read-only with simulated actions)."""
+"""FastAPI service to audit the first 250 HubSpot form submissions (read-only smoke test with simulated actions)."""
 
 from __future__ import annotations
-import json, logging, os
+import json, logging, os, time
 from collections import Counter
 from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Optional, Tuple
@@ -10,10 +10,6 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-
-# ---------------------------------------------------------------------
-# Setup
-# ---------------------------------------------------------------------
 
 load_dotenv()
 
@@ -29,14 +25,13 @@ for h in (
     h.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(h)
 
-logger.info("Starting HubSpot Form Audit (SMOKE TEST MODE – first 100 submissions)")
+logger.info("Starting HubSpot Form Audit (SMOKE TEST MODE – first 250 only)")
 
-app = FastAPI(title="HubSpot Form Audit – Smoke Test (Preview 100 submissions)")
+app = FastAPI(title="HubSpot Form Audit – Smoke Test (Preview 250 submissions)")
 
 HUBSPOT_BASE_URL = os.getenv("HUBSPOT_BASE_URL", "https://api.hubapi.com")
 DEFAULT_FORM_ID = os.getenv("HUBSPOT_FORM_ID", "4750ad3c-bf26-4378-80f6-e7937821533f")
 HUBSPOT_TOKEN = os.getenv("HUBSPOT_PRIVATE_APP_TOKEN")
-
 CHECKBOX_PROPERTIES = [
     p.strip()
     for p in os.getenv(
@@ -49,21 +44,13 @@ CHECKBOX_PROPERTIES = [
 
 
 def hubspot_headers(ct: bool = True) -> Dict[str, str]:
-    """Return standard HubSpot auth headers (always include Accept to prevent 400 errors)."""
     if not HUBSPOT_TOKEN:
         raise RuntimeError("Missing HUBSPOT_PRIVATE_APP_TOKEN")
-    h = {
-        "Authorization": f"Bearer {HUBSPOT_TOKEN}",
-        "Accept": "application/json",
-    }
+    h = {"Authorization": f"Bearer {HUBSPOT_TOKEN}"}
     if ct:
         h["Content-Type"] = "application/json"
     return h
 
-
-# ---------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------
 
 class RunRequest(BaseModel):
     form_id: Optional[str] = None
@@ -77,10 +64,6 @@ class RunSummary(BaseModel):
     report_file: str
 
 
-# ---------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------
-
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -92,42 +75,46 @@ def kill_process():
     os._exit(0)
 
 
+# ---------------------------------------------------------------------
+# Smoke Test – First 250 Submissions Only (with simulated actions)
+# ---------------------------------------------------------------------
+
 @app.api_route("/run-preview", methods=["GET", "POST"], response_model=RunSummary)
 def run_preview_audit(request: Optional[RunRequest] = None) -> RunSummary:
-    """Fetch and audit only the first 100 submissions for a quick validation run."""
+    """Fetch and audit only the first 250 submissions for a validation run."""
     form_id = (request.form_id or DEFAULT_FORM_ID or "").strip() if request else DEFAULT_FORM_ID
     if not form_id:
         raise HTTPException(status_code=500, detail="HUBSPOT_FORM_ID required")
 
-    logger.info("🚀 Starting smoke test (first 100 submissions) for form %s", form_id)
-    subs = fetch_first_n_submissions(form_id, n=100)
+    logger.info("🚀 Starting smoke test (first 250 submissions) for form %s", form_id)
+    subs = fetch_first_n_submissions(form_id, n=250)
     deduped = deduplicate_by_latest(subs)
-    stats = process_submissions(deduped, report_name="marketing_audit_smoketest.jsonl")
+    stats = process_submissions(deduped, report_name="marketing_audit_smoketest_250.jsonl")
     logger.info("✅ Smoke test completed successfully.")
     return RunSummary(**stats)
 
 
-# ---------------------------------------------------------------------
-# Fetching and Deduplication
-# ---------------------------------------------------------------------
-
-def fetch_first_n_submissions(form_id: str, n: int = 100) -> List[Dict]:
+def fetch_first_n_submissions(form_id: str, n: int = 250) -> List[Dict]:
     """Fetch the first N submissions (no pagination, read-only)."""
+    logger.info("🧪 Preview mode active — fetching up to %d submissions (read-only)", n)
     r = requests.get(
         f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}",
-        headers=hubspot_headers(),  # ✅ keep Content-Type & Accept to avoid 400 errors
+        headers=hubspot_headers(False),
         params={"limit": n},
         timeout=30,
     )
     r.raise_for_status()
     data = r.json()
     subs = data.get("results", [])[:n]
-    logger.info("✅ Retrieved %s submissions (smoke test mode, limit=%s)", len(subs), n)
+    logger.info("✅ Retrieved %s submissions (smoke test mode)", len(subs))
     return subs
 
 
+# ---------------------------------------------------------------------
+# Core processing logic
+# ---------------------------------------------------------------------
+
 def deduplicate_by_latest(subs: List[Dict]) -> List[Dict]:
-    """Keep only the latest submission per email."""
     latest: Dict[str, Dict] = {}
     for s in subs:
         email, _ = parse_submission(s)
@@ -140,11 +127,7 @@ def deduplicate_by_latest(subs: List[Dict]) -> List[Dict]:
     return list(latest.values())
 
 
-# ---------------------------------------------------------------------
-# Processing and Simulated Actions
-# ---------------------------------------------------------------------
-
-def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest.jsonl") -> Dict[str, int]:
+def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest_250.jsonl") -> Dict[str, int]:
     stats = {"processed": 0, "contacts_found": 0, "skipped": 0, "errors": 0}
     status_counts, reason_counts = Counter(), Counter()
 
@@ -177,9 +160,8 @@ def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest
                     action = "→ WOULD UPDATE to FALSE (Opt-In Not Checked, Forms #registerForm)"
                 else:
                     action = "→ NO CHANGE (Status false and consistent)"
-            elif status == "true":
-                # Keep as marketing contact regardless of form checkbox
-                action = "→ NO CHANGE (Already marketing contact; form opt-out ignored)"
+            elif status == "true" and opt_in_value == "Not Checked":
+                action = "→ WOULD UPDATE to FALSE (Currently marketing but form opted out)"
             else:
                 action = "→ NO CHANGE (Status aligns with form)"
 
@@ -192,7 +174,6 @@ def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest
                 "hs_marketable_reason_id": reason_id,
                 "simulated_action": action,
             }
-
             with open(report_name, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")
 
@@ -217,31 +198,24 @@ def process_submissions(subs: List[Dict], report_name="marketing_audit_smoketest
 
 
 # ---------------------------------------------------------------------
-# Supporting Functions
+# Supporting functions
 # ---------------------------------------------------------------------
 
 def parse_submission(s: Dict) -> Tuple[Optional[str], Dict[str, str]]:
-    """Extract email and checkbox states (Checked/Not Checked only)."""
     vals = s.get("values", [])
     email, consent = None, {}
-
     for v in vals:
         name, val = v.get("name"), v.get("value")
         if not isinstance(name, str) or not isinstance(val, str):
             continue
         if name == "email":
             email = val.strip()
-        elif name in CHECKBOX_PROPERTIES:
-            val_str = val.strip()
-            if val_str not in ("Checked", "Not Checked"):
-                val_str = "Not Checked"  # normalize any unexpected case
-            consent[name] = val_str
-
+        elif name in CHECKBOX_PROPERTIES and val.strip() in ("Checked", "Not Checked"):
+            consent[name] = val.strip()
     return email, consent
 
 
 def find_contact_by_email(email: str) -> Optional[str]:
-    """Find contact ID by email address."""
     payload = {
         "filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": email}]}],
         "limit": 1,
@@ -287,8 +261,6 @@ def get_marketing_contact_status(cid: str) -> Tuple[Optional[str], Optional[str]
     return status, reason, reason_type, reason_id
 
 
-# ---------------------------------------------------------------------
-# Local execution entrypoint
 # ---------------------------------------------------------------------
 
 if __name__ == "__main__":
