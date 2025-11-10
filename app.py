@@ -75,7 +75,8 @@ def kill_process():
     os._exit(0)
 
 
-@app.post("/run-preview", response_model=RunSummary)
+# ✅ Allow GET and POST for browser and API testing
+@app.api_route("/run-preview", methods=["GET", "POST"], response_model=RunSummary)
 def run_preview(request: Optional[RunRequest] = None) -> RunSummary:
     """Fetch and audit the first 50 submissions only."""
     form_id = (request.form_id or DEFAULT_FORM_ID or "").strip() if request else DEFAULT_FORM_ID
@@ -83,9 +84,11 @@ def run_preview(request: Optional[RunRequest] = None) -> RunSummary:
         raise HTTPException(status_code=500, detail="HUBSPOT_FORM_ID required")
 
     logger.info("Fetching the first 50 submissions for %s", form_id)
+    print("🚀 Starting 50-record preview run...")
     subs = fetch_first_n_submissions(form_id, n=50)
     deduped = deduplicate_by_latest(subs)
     stats = process_submissions(deduped, report_name="marketing_audit_preview.jsonl")
+    print("✅ Preview completed successfully.")
     return RunSummary(**stats)
 
 
