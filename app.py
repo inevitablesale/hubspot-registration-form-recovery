@@ -1,7 +1,7 @@
-"""FastAPI service to audit HubSpot consent preferences (read-only)."""
+"""FastAPI service to audit the first 50 HubSpot form submissions (read-only preview)."""
 
 from __future__ import annotations
-import json, logging, os, time, signal, sys
+import json, logging, os, time
 from collections import Counter
 from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Optional, Tuple
@@ -13,21 +13,21 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-LOG_FILE = os.getenv("LOG_FILE", "recovery.log")
+LOG_FILE = os.getenv("LOG_FILE", "recovery_preview.log")
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
-logger = logging.getLogger("hubspot_form_audit")
+logger = logging.getLogger("hubspot_form_preview")
 logger.setLevel(logging.INFO)
 logger.handlers = []
 for h in (
     logging.StreamHandler(),
-    RotatingFileHandler(LOG_FILE, maxBytes=2_000_000, backupCount=3),
+    RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=2),
 ):
     h.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(h)
 
-logger.info("Starting HubSpot Form Audit Service (READ-ONLY MODE)")
+logger.info("Starting HubSpot Form Audit Preview (READ-ONLY MODE)")
 
-app = FastAPI(title="HubSpot Form Audit – Sequential Version")
+app = FastAPI(title="HubSpot Form Audit – Preview 50 submissions")
 
 HUBSPOT_BASE_URL = os.getenv("HUBSPOT_BASE_URL", "https://api.hubapi.com")
 DEFAULT_FORM_ID = os.getenv("HUBSPOT_FORM_ID", "4750ad3c-bf26-4378-80f6-e7937821533f")
@@ -41,8 +41,6 @@ CHECKBOX_PROPERTIES = [
     ).split(",")
     if p.strip()
 ]
-
-FORM_PAGE_SIZE, FETCH_DEFAULT_DELAY, SEARCH_DEFAULT_DELAY = 1000, 0.2, 0.2
 
 
 def hubspot_headers(ct: bool = True) -> Dict[str, str]:
@@ -66,90 +64,47 @@ class RunSummary(BaseModel):
     report_file: str
 
 
-# ---------------------------------------------------------------------
-# HEALTH AND KILL ENDPOINTS
-# ---------------------------------------------------------------------
-
 @app.get("/health")
 def health_check():
-    """Return 200 OK for health probes."""
     return {"status": "ok"}
+
 
 @app.post("/kill")
 def kill_process():
-    """Gracefully stop the service."""
     logger.warning("Kill command received — shutting down process...")
-    os.kill(os.getpid(), signal.SIGTERM)
-    return {"status": "terminated"}
+    os._exit(0)
 
-# ---------------------------------------------------------------------
 
-@app.post("/run", response_model=RunSummary)
-def run_recovery(request: Optional[RunRequest] = None) -> RunSummary:
+@app.post("/run-preview", response_model=RunSummary)
+def run_preview(request: Optional[RunRequest] = None) -> RunSummary:
+    """Fetch and audit the first 50 submissions only."""
     form_id = (request.form_id or DEFAULT_FORM_ID or "").strip() if request else DEFAULT_FORM_ID
     if not form_id:
         raise HTTPException(status_code=500, detail="HUBSPOT_FORM_ID required")
-    logger.info("Auditing form submissions for %s", form_id)
-    subs = fetch_all_submissions(form_id)
+
+    logger.info("Fetching the first 50 submissions for %s", form_id)
+    subs = fetch_first_n_submissions(form_id, n=50)
     deduped = deduplicate_by_latest(subs)
-    stats = process_submissions(deduped)
+    stats = process_submissions(deduped, report_name="marketing_audit_preview.jsonl")
     return RunSummary(**stats)
 
 
 # ---------------------------------------------------------------------
-# FETCH LOOP WITH SAFE EXIT CONDITIONS
-# ---------------------------------------------------------------------
 
-def fetch_all_submissions(form_id: str) -> List[Dict]:
-    logger.info("Fetching form submissions...")
-    subs, has_more, offset = [], True, None
-    while has_more:
-        params = {"limit": FORM_PAGE_SIZE}
-        if offset:
-            params["offset"] = offset
-
-        r = requests.get(
-            f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}",
-            headers=hubspot_headers(False),
-            params=params,
-            timeout=30,
-        )
-        r.raise_for_status()
-        data = r.json()
-        page = data.get("results", [])
-        subs.extend(page)
-
-        if len(subs) % 1000 == 0 or not page:
-            logger.info("Fetched %s total submissions so far", len(subs))
-
-        has_more = data.get("hasMore", False)
-        offset_value = (
-            data.get("continuationOffset")
-            or data.get("offset")
-            or data.get("paging", {}).get("next", {}).get("after")
-        )
-
-        # Defensive stop conditions
-        if not page:
-            logger.warning("No results on this page — stopping early to avoid loop")
-            break
-        if has_more and not offset_value:
-            logger.warning(
-                "HubSpot returned hasMore=True but no offset token — stopping to prevent infinite loop"
-            )
-            break
-
-        offset = str(offset_value) if offset_value else None
-
-        sleep_for_rate_limit(r.headers, FETCH_DEFAULT_DELAY)
-        if not has_more:
-            break
-
-    logger.info("✅ All submissions fetched: %s", len(subs))
+def fetch_first_n_submissions(form_id: str, n: int) -> List[Dict]:
+    """Fetch only the first N form submissions (no pagination loop)."""
+    r = requests.get(
+        f"{HUBSPOT_BASE_URL}/form-integrations/v1/submissions/forms/{form_id}",
+        headers=hubspot_headers(False),
+        params={"limit": n},
+        timeout=30,
+    )
+    r.raise_for_status()
+    data = r.json()
+    subs = data.get("results", [])[:n]
+    logger.info("✅ Retrieved %s submissions (preview mode)", len(subs))
     return subs
 
-
-# ---------------------------------------------------------------------
 
 def deduplicate_by_latest(subs: List[Dict]) -> List[Dict]:
     latest: Dict[str, Dict] = {}
@@ -164,20 +119,18 @@ def deduplicate_by_latest(subs: List[Dict]) -> List[Dict]:
     return list(latest.values())
 
 
-def process_submissions(subs: List[Dict]) -> Dict[str, int]:
+def process_submissions(subs: List[Dict], report_name="marketing_audit_preview.jsonl") -> Dict[str, int]:
     stats = {"processed": 0, "contacts_found": 0, "skipped": 0, "errors": 0}
     status_counts, reason_counts = Counter(), Counter()
-    report_file = "marketing_audit_report.jsonl"
-    if os.path.exists(report_file):
-        os.remove(report_file)
 
-    logger.info("Beginning per-contact audit...")
+    if os.path.exists(report_name):
+        os.remove(report_name)
 
     for i, s in enumerate(subs, 1):
         stats["processed"] += 1
         try:
             email, boxes = parse_submission(s)
-            if not email or not boxes:
+            if not email:
                 stats["skipped"] += 1
                 continue
             cid = find_contact_by_email(email)
@@ -195,20 +148,14 @@ def process_submissions(subs: List[Dict]) -> Dict[str, int]:
                 "form_values": boxes,
                 "hs_marketable_status": status,
                 "hs_marketable_reason": reason,
-                "is_non_marketing_due_to_registerform": bool(
-                    status and status.lower() == "non-marketing"
-                    and reason and "#registerform" in reason.lower()
-                ),
             }
-            with open(report_file, "a", encoding="utf-8") as f:
+            with open(report_name, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")
-            val = next(iter(boxes.values())) if boxes else "—"
             logger.info(
-                "[%s/%s] %s | Opt-In: %s | Status: %s | Reason: %s",
+                "[%s/%s] %s | Status: %s | Reason: %s",
                 i,
                 len(subs),
                 email,
-                val,
                 status or "—",
                 reason or "—",
             )
@@ -216,17 +163,11 @@ def process_submissions(subs: List[Dict]) -> Dict[str, int]:
             stats["errors"] += 1
             logger.error("Error %s: %s", i, e)
 
-    logger.info("✅ Audit complete. Report: %s", report_file)
-    logger.info("--------------------------------------------------")
-    logger.info("Summary Totals:")
-    logger.info("  Marketing Status Counts: %s", dict(status_counts))
-    logger.info("  Marketing Reason Counts: %s", dict(reason_counts))
-    logger.info("--------------------------------------------------")
+    logger.info("✅ Preview complete. Report saved to %s", report_name)
+    logger.info("Status counts: %s", dict(status_counts))
+    logger.info("Reason counts: %s", dict(reason_counts))
+    return {**stats, "report_file": report_name}
 
-    return {**stats, "report_file": report_file}
-
-
-# ---------------------------------------------------------------------
 
 def parse_submission(s: Dict) -> Tuple[Optional[str], Dict[str, str]]:
     vals = s.get("values", [])
@@ -255,7 +196,6 @@ def find_contact_by_email(email: str) -> Optional[str]:
         timeout=30,
     )
     r.raise_for_status()
-    sleep_for_rate_limit(r.headers, SEARCH_DEFAULT_DELAY)
     res = r.json().get("results", [])
     return res[0].get("id") if res else None
 
@@ -272,12 +212,8 @@ def get_marketing_contact_status(cid: str) -> Tuple[Optional[str], Optional[str]
     return p.get("hs_marketable_status"), p.get("hs_marketable_reason")
 
 
-def sleep_for_rate_limit(headers: Dict[str, str], delay: float):
-    time.sleep(delay)
-
-
 # ---------------------------------------------------------------------
 
 if __name__ == "__main__":
-    summary = run_recovery()
-    logger.info("Run finished: %s", summary.model_dump())
+    summary = run_preview()
+    logger.info("Preview run finished: %s", summary.model_dump())
